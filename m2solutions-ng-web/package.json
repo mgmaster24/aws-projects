@@ -1,0 +1,35 @@
+{
+  "name": "@extron/em-tap-ui",
+  "version": "2.2.0",
+  "description": "Provides a web interface and discovery service for the Extron Tenant Access Portal",
+  "devDependencies": {
+    "@extron/versioning": "^2.1.3",
+    "lerna": "^3.22.1"
+  },
+  "private": true,
+  "scripts": {
+    "bootstrap": "lerna bootstrap",
+    "build": "lerna run build:ci",
+    "clean": "lerna clean",
+    "lint": "lerna run lint:ci",
+    "test": "lerna run test:ci",
+    "web:link": "cd ./packages/web && npm link @extron/sync-ng-lib",
+    "web:install": "cd ./packages/web && npm install",
+    "setup": "npm run web:install && npm run web:link",
+    "start": "cd ./packages/web && npm start",
+    "e2e": "cd ./packages/web && npm run test:protractor",
+    "version:patch": "extron-versioning version -i patch && extron-versioning version -i patch -p ./packages/web/package.json && extron-versioning version -i patch -p ./packages/web/projects/extron-core-ng/package.json && extron-versioning version -i patch -p ./packages/discovery/package.json && extron-versioning version -i patch -p ./packages/cloudfront-events/package.json && extron-versioning version -i patch -p ./deploy/custom-resources/package.json && extron-versioning version -i patch -p ./packages/web/src/assets/application-version.json && extron-versioning version -i patch -p ./packages/downloads-service/package.json && extron-versioning version -i patch -p ./packages/cdk/package.json",
+    "version:minor": "extron-versioning version -i minor && extron-versioning version -i minor -p ./packages/web/package.json && extron-versioning version -i minor -p ./packages/web/projects/extron-core-ng/package.json && extron-versioning version -i minor -p ./packages/discovery/package.json && extron-versioning version -i minor -p ./packages/cloudfront-events/package.json && extron-versioning version -i minor -p ./deploy/custom-resources/package.json && extron-versioning version -i minor -p ./packages/web/src/assets/application-version.json && extron-versioning version -i minor -p ./packages/downloads-service/package.json && extron-versioning version -i minor -p ./packages/cdk/package.json",
+    "version:major": "extron-versioning version -i major && extron-versioning version -i major -p ./packages/web/package.json && extron-versioning version -i major -p ./packages/web/projects/extron-core-ng/package.json && extron-versioning version -i major -p ./packages/discovery/package.json && extron-versioning version -i major -p ./packages/cloudfront-events/package.json && extron-versioning version -i major -p ./deploy/custom-resources/package.json && extron-versioning version -i major -p ./packages/web/src/assets/application-version.json && extron-versioning version -i major -p ./packages/downloads-service/package.json && extron-versioning version -i major -p ./packages/cdk/package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://bitbucket.org/extron-electronics/sync-ng-seed-ui.git"
+  },
+  "resolutions": {
+    "node-sass": "4.12.0"
+  },
+  "author": "",
+  "license": "ISC",
+  "homepage": "https://bitbucket.org/extron-electronics/sync-ng-seed-ui#readme"
+}
