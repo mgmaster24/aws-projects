@@ -1,0 +1,22 @@
+[
+  {
+    "ParameterKey": "ArtifactBucketKey",
+    "ParameterValue": "custom-resources.zip"
+  },
+  {
+    "ParameterKey": "ArtifactBucketName",
+    "ParameterValue": "moose-em-tap-ui-custom-resources-s-lambdas3bucket-1xg7zmbshjqdx"
+  },
+  {
+    "ParameterKey": "DeploymentSubdomainName",
+    "ParameterValue": "e3devcloud.com"
+  },
+  {
+    "ParameterKey": "DiscoverySubdomain",
+    "ParameterValue": "moose-discovery.api"
+  },
+  {
+    "ParameterKey": "HostedZoneId",
+    "ParameterValue": "Z0932217SV562POQLPTZ"
+  }
+]

@@ -1,0 +1,21 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: >
+  AWS CloudFormation template for creating the S3 bucket that hosts the CloudFormation custom resources (lulo plugin)
+
+Resources:
+  LambdaS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+Outputs:
+  S3BucketName:
+    Value: !Ref LambdaS3Bucket
+    Description: The S3 bucket name
+    Export:
+      Name: !Sub ${AWS::StackName}-S3BucketName

@@ -1,0 +1,13 @@
+{
+    "ContentSecurityPolicyTrustedDomains": "",
+    "DeploymentDomain": "",
+    "HostedZoneId": "",
+    "DeploymentSubdomain": "",
+    "Aliases": "",
+    "WebUIBucketName": "",
+    "CertificateArn": "",
+    "WebBuildId": "",
+    "WebUIOriginAccessIdentityId": "",
+    "CfOriginResponseDefaultBehaviorLambdaArn": "",
+    "WebACLId": ""
+}

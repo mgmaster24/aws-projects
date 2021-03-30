@@ -1,0 +1,18 @@
+[
+  {
+    "ParameterKey": "DomainName",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "HostedZoneId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "AutoCertApproval",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "EmailCertApproval",
+    "ParameterValue": ""
+  }
+]

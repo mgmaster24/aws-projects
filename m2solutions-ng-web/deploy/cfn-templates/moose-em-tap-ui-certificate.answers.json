@@ -1,0 +1,18 @@
+[
+  {
+    "ParameterKey": "DomainName",
+    "ParameterValue": "*.box.nortxe.com"
+  },
+  {
+    "ParameterKey": "HostedZoneId",
+    "ParameterValue": "Z29BAJCZHELNB7"
+  },
+  {
+    "ParameterKey": "AutoCertApproval",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "EmailCertApproval",
+    "ParameterValue": "false"
+  }
+]

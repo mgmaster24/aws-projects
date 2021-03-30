@@ -1,0 +1,126 @@
+---
+#-----------------------------------------------------------------------------------------------------------------------
+# Build Project Environment Variables:
+# https://extron.atlassian.net/wiki/spaces/CO/pages/1411579909/CodePipeline+2.0#[hardBreak]Environment-Variables
+#
+# CodeBuild Environment Variables
+# https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-env-vars.html
+#-----------------------------------------------------------------------------------------------------------------------
+
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 10
+    commands:
+      # Install aws-codebuild-extras https://github.com/thii/aws-codebuild-extras
+      - curl -fsSL https://raw.githubusercontent.com/thii/aws-codebuild-extras/master/install >> extras.sh && . ./extras.sh
+
+      # create .npmrc
+      - echo registry=${NPM_REGISTRY} > ~/.npmrc
+      - curl -sS -u $RNC_BUILD_ARTIFACTORY_USERNAME:$RNC_BUILD_ARTIFACTORY_PASSWORD $NPM_AUTH_API >> ~/.npmrc
+
+      # install dependencies
+      - npm ci
+      - npm run bootstrap -- --ci
+      - npm --prefix ./deploy/custom-resources ci ./deploy/custom-resources
+
+      # Increase Nodejs Heap size
+      - export NODE_OPTIONS=--max_old_space_size=4096
+
+  pre_build:
+    commands:
+      # Get the package version
+      - PACKAGE_VERSION=$(cat package.json | jq -j '.version')
+      - VERSION=$PACKAGE_VERSION+$CODEBUILD_GIT_SHORT_COMMIT+$CODEBUILD_START_TIME # eventually will be used for SonarQube during feature build
+      - echo "Package version is $PACKAGE_VERSION" && echo "Long version is $VERSION"
+
+      # Fail the build if the version hasn't been updated
+      - |
+        if [ $(git tag -l "$PACKAGE_VERSION") ]; then
+          echo "Error: Found an existing tag with version $PACKAGE_VERSION: Run the appropriate version script in the root package.json"
+          exit 1
+        fi
+
+  build:
+    commands:
+      # Validate CFN templates
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-bucket.template.yaml
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-certificate.template.yaml
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-custom-resources-s3-bucket.template.yaml
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-discovery.template.yaml
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-downloads-api-domain.template.yaml
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-downloads-s3-bucket.template.yaml
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-monitors.template.yaml
+      - aws cloudformation validate-template --template-body file://$CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-origin-access-identity.template.yaml
+
+      # Build web projects (extron-core-ng, web)
+      - npm run build
+
+      # Lint web projects (extron-core-ng, web, web-ui-e2e)
+      - npm run lint
+
+      # Test projects (extron-core-ng, web, cloudfront-events)
+      - npm run test
+
+      # Build and package discovery service
+      - cd $CODEBUILD_SRC_DIR/packages/discovery
+      - npx sls package --stage example --buildVersion $PACKAGE_VERSION --verbose
+      - cd $CODEBUILD_SRC_DIR
+
+      # Build and package cloudfront-events service
+      - cd $CODEBUILD_SRC_DIR/packages/cloudfront-events
+      - npx sls package --stage example --buildVersion $PACKAGE_VERSION --verbose
+      - cd $CODEBUILD_SRC_DIR
+
+      # Build and package downloads-service
+      - cd $CODEBUILD_SRC_DIR/packages/downloads-service
+      - npx sls package --stage example --buildVersion $PACKAGE_VERSION --verbose
+      - cd $CODEBUILD_SRC_DIR
+
+      # Create custom resources package (lulo). Outputs custom-resources.zip
+      - npm --prefix ./deploy/custom-resources run package:custom-resources
+
+      # Create npm package for extron-core-ng
+      - npm pack ./packages/web/dist/extron-core-ng
+
+  post_build:
+    commands:
+      # Tag the commit if the git branch is master and publish packages
+      - |
+        if expr "$CODEBUILD_GIT_BRANCH" : "master" && expr "$CODEBUILD_BUILD_SUCCEEDING" = 1 > /dev/null; then
+          git config --global user.email "rnc_build@extron.com"
+          git config --global user.name "RNC Build"
+          git tag -f -a -m "Tagging $CODEBUILD_GIT_SHORT_COMMIT with $PACKAGE_VERSION by build $CODEBUILD_BUILD_ID" "$PACKAGE_VERSION" "$CODEBUILD_GIT_SHORT_COMMIT"
+          git push https://$RNC_BUILD_BITBUCKET_USERNAME:$RNC_BUILD_BITBUCKET_PASSWORD@$GIT_REPO_URL "$PACKAGE_VERSION"
+
+          # Publish extron-core-ng
+          npm publish extron-core-ng-$PACKAGE_VERSION.tgz;
+        fi
+
+      # Remove node_modules (they seem to be causing errors during deploy)
+      - find . -maxdepth 4 -type d -name "node_modules" | xargs rm -rf
+
+artifacts:
+  files:
+    - '**/*'
+  name: $EXTRON_APP_NAME-${PACKAGE_VERSION}_${CODEBUILD_GIT_SHORT_COMMIT}_${CODEBUILD_START_TIME}
+
+reports:
+  lint-report:
+    files:
+      - packages/web/web-ui-lint-results.xml
+      - packages/web/web-ui-e2e-lint-results.xml
+      - packages/web/extron-core-ng-lint-results.xml
+      - packages/cloudfront-events/eslint-results.xml
+      - packages/downloads-service/tslint-results.xml
+  unit-test-report:
+    files:
+      - packages/web/src/junitReport/TESTS.xml
+      - packages/web/projects/extron-core-ng/junitReport/TESTS.xml
+      - packages/cloudfront-events/.jasmine/junitresults.xml
+      - packages/downloads-service/.jasmine/service/junitresults.xml

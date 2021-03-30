@@ -1,0 +1,45 @@
+{
+  "name": "@extron/em-tap-ui-cdk",
+  "version": "2.2.0",
+  "description": "Provides a way to create and deploy stacks using the AWS CDK",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "build:ci": "npm run build",
+    "package:cloud-front": "cdk synth --app \"ts-node src/bin/cloud-front.ts\" --context StackName=test",
+    "lint": "tslint --config ./tslint.json --project . --out tslint-results.xml --format junit",
+    "lint:ci": "npm run lint",
+    "test": "jest --coverage",
+    "test:ci": "jest --coverage",
+    "test:dev": "jest",
+    "test:dev:watch": "jest --watch"
+  },
+  "dependencies": {
+    "@aws-cdk/aws-cloudfront": "^1.60.0",
+    "@aws-cdk/aws-route53": "^1.60.0",
+    "@aws-cdk/aws-route53-targets": "^1.60.0",
+    "@aws-cdk/core": "^1.60.0"
+  },
+  "devDependencies": {
+    "@aws-cdk/assert": "^1.60.0",
+    "@types/jest": "^25.2.1",
+    "@types/node": "10.17.5",
+    "aws-cdk": "^1.60.0",
+    "jest": "^26.4.0",
+    "jest-junit": "^11.1.0",
+    "jest-sonar": "^0.2.10",
+    "ts-jest": "^26.2.0",
+    "ts-loader": "^8.0.2",
+    "ts-node": "8.10.2",
+    "tslint": "^6.1.3",
+    "typescript": "^3.9.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://bitbucket.org/extron-electronics/em-tap-ui.git"
+  },
+  "author": "Extron Electronics",
+  "license": "UNLICENSED",
+  "homepage": "https://bitbucket.org/extron-electronics/em-tap-ui"
+}

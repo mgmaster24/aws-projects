@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS CloudFormation template to create a custom domain name and certificate
+
+Parameters:
+  DomainName:
+    Description: The top level domain (e.g. ui.extroncloud.com)
+    Type: String
+  HostedZoneId:
+    Description: ID of the hosted zone you are creating the certificate in. Alphanumeric string.
+    Type: String
+  AutoCertApproval:
+    Description: Turn on automatic approval of certificates through DNS when set to true. Default true.
+    Type: String
+    Default: true
+  EmailCertApproval:
+    Description: Turn on manual email approval of certificates when set to true. Default false.
+    Type: String
+    Default: false
+
+Conditions:
+  IsAutoCert: !Equals
+    - !Ref AutoCertApproval
+    - true
+  IsEmailCert: !Equals
+    - !Ref EmailCertApproval
+    - true
+
+Resources:
+  Certificate:
+    Condition: IsAutoCert
+    Type: Custom::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:binxio-cfn-certificate-provider'
+
+  IssuedCertificate:
+    Condition: IsAutoCert
+    Type: Custom::IssuedCertificate
+    Properties:
+      CertificateArn: !Ref Certificate
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:binxio-cfn-certificate-provider'
+
+  CertificateDNSRecord:
+    Condition: IsAutoCert
+    Type: Custom::CertificateDNSRecord
+    Properties:
+      CertificateArn: !Ref Certificate
+      DomainName: !Ref DomainName
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:binxio-cfn-certificate-provider'
+
+  DomainValidationRecord:
+    Condition: IsAutoCert
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets:
+        - Name: !GetAtt CertificateDNSRecord.Name
+          Type: !GetAtt CertificateDNSRecord.Type
+          TTL: 60
+          Weight: 1
+          SetIdentifier: !Ref Certificate
+          ResourceRecords:
+            - !GetAtt CertificateDNSRecord.Value
+
+  EmTapCustomDomainCertificateEmail:
+    Condition: IsEmailCert
+    Type: 'AWS::CertificateManager::Certificate'
+    Properties:
+      DomainName: !Ref DomainName
+
+Outputs:
+  EmTapUIDomainCertificate:
+    Condition: IsAutoCert
+    Value: !Ref IssuedCertificate
+    Description: EM TAP UI Custom Domain Certificate
+
+  EmTapUIDomainCertificateEmail:
+    Condition: IsEmailCert
+    Value: !Ref EmTapCustomDomainCertificateEmail
+    Description: EM TAP UI Custom Domain Certificate

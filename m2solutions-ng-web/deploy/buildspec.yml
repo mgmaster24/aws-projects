@@ -1,0 +1,204 @@
+---
+#-----------------------------------------------------------------------------------------------------------------------
+# Build Project Environment Variables:
+# https://extron.atlassian.net/wiki/spaces/CO/pages/1411579909/CodePipeline+2.0#[hardBreak]Environment-Variables
+#
+# CodeBuild Environment Variables
+# https://docs.aws.amazon.com/codebuild/latest/userguide/build-env-ref-env-vars.html
+#-----------------------------------------------------------------------------------------------------------------------
+
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 10
+    commands:
+      # create .npmrc
+      - echo registry=${NPM_REGISTRY} > ~/.npmrc
+      - curl -sS -u $RNC_BUILD_ARTIFACTORY_USERNAME:$RNC_BUILD_ARTIFACTORY_PASSWORD $NPM_AUTH_API >> ~/.npmrc
+
+      # Install generate-config
+      - pip install -q yq==2.11.1
+      - pip install -q --user --index-url https://$RNC_BUILD_ARTIFACTORY_USERNAME:$RNC_BUILD_ARTIFACTORY_PASSWORD@$PYPI_REPO_SIMPLE em-generate-config==2.8.1
+
+      # Set the path to the generate-config
+      - GEN_CONFIG_PATH='/root/.local/bin/generate-config'
+
+      # install dependencies
+      - npm ci
+      - npm run bootstrap -- --ci
+      - npm --prefix ./deploy/custom-resources ci ./deploy/custom-resources
+
+  pre_build:
+    commands:
+      # Set environment variable so that Node knows to load local AWS credentials file
+      - AWS_SDK_LOAD_CONFIG=1
+
+      # Generate Discovery CloudFormation parameters from config store
+      - $GEN_CONFIG_PATH --output cfn --basePath em-tap-ui/em-tap-ui-discovery --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - TAP_UI_DISCOVERY_PARAMS="$(jq -r 'map("\"\(.ParameterKey)=\(.ParameterValue)\"") | join(" ")' $CODEBUILD_SRC_DIR/em-tap-ui-discovery.answers.json)"
+      - echo $TAP_UI_DISCOVERY_PARAMS
+
+      # Generate Discovery serverless parameters from config store
+      - $GEN_CONFIG_PATH --output sls --basePath em-tap-ui/em-tap-ui-discovery --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - mv ./config.em-tap-ui-discovery.yml $CODEBUILD_SRC_DIR/packages/discovery/config.$DEPLOYMENT_STAGE_NAME.yml
+      - cat $CODEBUILD_SRC_DIR/packages/discovery/config.$DEPLOYMENT_STAGE_NAME.yml
+
+      # Generate web-ui config
+      - $GEN_CONFIG_PATH --output cfn --basePath em-tap-ui/em-tap-ui --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - TAP_UI_RESOURCES_PARAMS="$(jq -r 'map("\"\(.ParameterKey)\":\"\(.ParameterValue)\"") | join(",\n\t")' $CODEBUILD_SRC_DIR/em-tap-ui.answers.json)"
+      - echo -e "{\n\t$TAP_UI_RESOURCES_PARAMS\n}" > $CODEBUILD_SRC_DIR/packages/cdk/src/properties/cloud-front.properties.json
+      - cat $CODEBUILD_SRC_DIR/packages/cdk/src/properties/cloud-front.properties.json
+
+      # Generate Certificate parameters from config-store
+      - $GEN_CONFIG_PATH --output cfn --basePath em-tap-ui/em-tap-ui-certificate --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - TAP_UI_CERT_PARAMS="$(jq -r 'map("\"\(.ParameterKey)=\(.ParameterValue)\"") | join(" ")' $CODEBUILD_SRC_DIR/em-tap-ui-certificate.answers.json)"
+      - echo $TAP_UI_CERT_PARAMS
+
+      # Generate Download Service CloudFormation parameters from config-store
+      - $GEN_CONFIG_PATH --output cfn --basePath em-tap-ui/em-tap-ui-downloads-service --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - TAP_UI_DOWNLOADS_SERVICE_PARAMS="$(jq -r 'map("\"\(.ParameterKey)=\(.ParameterValue)\"") | join(" ")' $CODEBUILD_SRC_DIR/em-tap-ui-downloads-service.answers.json)"
+      - echo $TAP_UI_DOWNLOADS_SERVICE_PARAMS
+
+      # Generate Download Service serverless parameters from config-store
+      - $GEN_CONFIG_PATH --output sls --basePath em-tap-ui/em-tap-ui-downloads-service --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - mv ./config.em-tap-ui-downloads-service.yml $CODEBUILD_SRC_DIR/packages/downloads-service/config.$DEPLOYMENT_STAGE_NAME.yml
+      - cat $CODEBUILD_SRC_DIR/packages/downloads-service/config.$DEPLOYMENT_STAGE_NAME.yml
+
+      # Generate Datadog monitor parameters from config-store
+      - $GEN_CONFIG_PATH --output cfn --basePath em-tap-ui/monitors --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - TAP_MONITORS_PARAMS="$(jq -r 'map("\"\(.ParameterKey)=\(.ParameterValue)\"") | join(" ")' $CODEBUILD_SRC_DIR/monitors.answers.json) \"DatadogApiKeySMKey=$DATADOG_API_KEY_NAME\" \"DatadogApplicationKeySMKey=$DATADOG_APP_KEY_NAME\" \"Environment=$DEPLOYMENT_STAGE_NAME\""
+      - echo $TAP_MONITORS_PARAMS
+
+      # Pull down WAF location config for downloads-service, discovery-service, and cloudfront distribution
+      - $GEN_CONFIG_PATH --output sls --basePath em-tap-ui/waf --stage $DEPLOYMENT_STAGE_NAME --paramRegion $AWS_REGION
+      - WAF_NAME_LOCATION="$(yq -r .wafNamePath ./config.waf.yml)"
+      - WAF_VERSION_LOCATION="$(yq -r .wafVersionPath ./config.waf.yml)"
+      - WEB_ACLID_LOCATION="$(yq -r .webAclIdPath ./config.waf.yml)"
+      - echo WAF_NAME_LOCATION $WAF_NAME_LOCATION WAF_VERSION_LOCATION $WAF_VERSION_LOCATION WEB_ACLID_LOCATION $WEB_ACLID_LOCATION
+
+      # Assume a role into the shared account
+      - ASSUMED_ROLE=$(aws sts assume-role --role-arn $SHARED_ACCOUNT_CD_ROLE_ARN --role-session-name SharedAccountSession)
+      - AWS_ACCESS_KEY_ID=$(echo $ASSUMED_ROLE | jq .Credentials.AccessKeyId | xargs)
+      - AWS_SECRET_ACCESS_KEY=$(echo $ASSUMED_ROLE | jq .Credentials.SecretAccessKey | xargs)
+      - AWS_SESSION_TOKEN=$(echo $ASSUMED_ROLE | jq .Credentials.SessionToken | xargs)
+
+  build:
+    commands:
+      # Generate resource tags
+      - PACKAGE_VERSION=$(cat package.json | jq -j '.version')
+      - TAGS="$(jq -r 'to_entries|map("\"\(.key)=\(.value)\"") | join(" ")' $CODEBUILD_SRC_DIR/tags.json) \"environment=$DEPLOYMENT_STAGE_NAME\" \"env=$DEPLOYMENT_STAGE_NAME\" \"version=$PACKAGE_VERSION\""
+      - CERT_TAGS="$(jq -r 'to_entries|map("Key=\"\(.key)\",Value=\"\(.value)\"") | join(" ")' $CODEBUILD_SRC_DIR/tags.json) Key=\"environment\",Value=\"$DEPLOYMENT_STAGE_NAME\" Key=\"env\",Value=\"$DEPLOYMENT_STAGE_NAME\" Key=\"version\",Value=\"$PACKAGE_VERSION\""
+      - CDK_TAGS="$(jq -r 'to_entries|map("\(.key)=\(.value)") | join(" --tags ")' $CODEBUILD_SRC_DIR/tags.json) --tags environment=$DEPLOYMENT_STAGE_NAME --tags env=$DEPLOYMENT_STAGE_NAME --tags version=$PACKAGE_VERSION"
+      - echo Stack tags = $TAGS && echo Certificate tags = $CERT_TAGS && echo CDK tags = $CDK_TAGS
+
+      # Define the stack name prefix used to deploy all stacks
+      - DEPLOY_STACK_NAME_PREFIX=$DEPLOYMENT_STAGE_NAME-$EXTRON_APP_NAME
+
+      # Deploy the custom resources S3 bucket
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-custom-resources-s3-bucket --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-custom-resources-s3-bucket.template.yaml --region $SHARED_ACCOUNT_CD_REGION --no-fail-on-empty-changeset --capabilities CAPABILITY_IAM --tags $TAGS)
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-custom-resources-s3-bucket --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      # Upload custom-resources.zip artifact to S3 bucket
+      - CUSTOM_RESOURCES_S3_BUCKET_NAME=$(cat /root/stack_output.json | jq -r '.S3BucketName')
+      - CUSTOM_RESOURCES_S3_BUCKET_KEY=$PACKAGE_VERSION/$CODEBUILD_BUILD_ID/custom-resources.zip
+      - aws s3 cp $CODEBUILD_SRC_DIR/deploy/custom-resources/custom-resources.zip s3://$CUSTOM_RESOURCES_S3_BUCKET_NAME/$CUSTOM_RESOURCES_S3_BUCKET_KEY
+
+      # Deploy the Downloads S3 Bucket
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-downloads-s3-bucket --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-downloads-s3-bucket.template.yaml --region $SHARED_ACCOUNT_CD_REGION --no-fail-on-empty-changeset --tags $TAGS)
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-downloads-s3-bucket --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - DOWNLOADS_BUCKET_NAME=$(cat /root/stack_output.json | jq -r '.S3BucketName')
+
+      # Deploy the CFN template for the Downloads Service API Domain
+      - TAP_UI_DOWNLOADS_SERVICE_PARAMS="$TAP_UI_DOWNLOADS_SERVICE_PARAMS \"ArtifactBucketName=$CUSTOM_RESOURCES_S3_BUCKET_NAME\" \"ArtifactBucketKey=$CUSTOM_RESOURCES_S3_BUCKET_KEY\"" && echo $TAP_UI_DOWNLOADS_SERVICE_PARAMS
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-downloads-service --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-downloads-api-domain.template.yaml --parameter-overrides $TAP_UI_DOWNLOADS_SERVICE_PARAMS --region ${SHARED_ACCOUNT_CD_REGION} --no-fail-on-empty-changeset --capabilities CAPABILITY_IAM --tags $TAGS)
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-downloads-service --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - AUTHORIZER_ROLE_ARN=$(cat /root/stack_output.json | jq -r '.AuthorizerRoleArn')
+
+      # Deploy the Downloads Service Serverless project
+      - cd $CODEBUILD_SRC_DIR/packages/downloads-service && export NODE_PRESERVE_SYMLINKS=1 && SLS_DEBUG=*
+
+      # Fetch values for WAF and Web AclId
+      - WAF_NAME=$(aws ssm get-parameter --name $WAF_NAME_LOCATION --region $AWS_REGION --output text --query Parameter.Value)
+      - WAF_VERSION=$(aws ssm get-parameter --name $WAF_VERSION_LOCATION --region $AWS_REGION --output text --query Parameter.Value)
+      # The WEB_ACLID needs to be passed into the cdk cloudfront distribution
+      - WEB_ACLID=$(aws ssm get-parameter --name $WEB_ACLID_LOCATION --region $AWS_REGION  --output text --query Parameter.Value)
+      - echo WAF_NAME $WAF_NAME WAF_VERSION $WAF_VERSION WEB_ACLID $WEB_ACLID
+      - yq --yaml-output --arg WafName "$WAF_NAME" '.wafName |= $WafName' ./config.$DEPLOYMENT_STAGE_NAME.yml > ./config.$DEPLOYMENT_STAGE_NAME-sls-tmp.yml
+      - yq --yaml-output --arg WafVersion "$WAF_VERSION" '.wafVersion |= $WafVersion' ./config.$DEPLOYMENT_STAGE_NAME-sls-tmp.yml > ./config.$DEPLOYMENT_STAGE_NAME.yml
+      - cat ./config.$DEPLOYMENT_STAGE_NAME.yml
+      - npx sls deploy --buildVersion $PACKAGE_VERSION --region $SHARED_ACCOUNT_CD_REGION --authorizerRole $AUTHORIZER_ROLE_ARN --downloadsBucket $DOWNLOADS_BUCKET_NAME --verbose --stage $DEPLOYMENT_STAGE_NAME
+      - cd $CODEBUILD_SRC_DIR
+
+      # Deploy the Web Origin Access Identity CFN template
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-origin-access-identity --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-origin-access-identity.template.yaml --region $SHARED_ACCOUNT_CD_REGION --no-fail-on-empty-changeset --tags $TAGS)
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-origin-access-identity --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - ORIGIN_ACCESS_IDENTITY_ID=$(cat /root/stack_output.json | jq -r '.WebUIOriginAccessIdentityId')
+
+      # Deploy the TAP UI Bucket
+      - TAP_UI_BUCKET_PARAMS="\"WebUIOriginAccessIdentityId=$ORIGIN_ACCESS_IDENTITY_ID\"" && echo $TAP_UI_BUCKET_PARAMS
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-ui-bucket --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-bucket.template.yaml --parameter-overrides $TAP_UI_BUCKET_PARAMS --region ${SHARED_ACCOUNT_CD_REGION} --no-fail-on-empty-changeset --tags $TAGS)
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-ui-bucket --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - CLOUDFRONT_BUCKET_NAME=$(cat /root/stack_output.json | jq -r '.S3BucketName')
+      - TAP_UI_ARTIFACTS_BASE_PATH=$CLOUDFRONT_BUCKET_NAME/$PACKAGE_VERSION/$CODEBUILD_BUILD_ID/
+
+      # Deploy the web certificate
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-certificate --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-certificate.template.yaml --parameter-overrides $TAP_UI_CERT_PARAMS --region $SHARED_ACCOUNT_CD_REGION --no-fail-on-empty-changeset --tags $TAGS)
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-certificate --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - CERT_ARN=$(cat /root/stack_output.json | jq -r '.EmTapUIDomainCertificate')
+      - aws acm add-tags-to-certificate --region $SHARED_ACCOUNT_CD_REGION --certificate-arn $CERT_ARN --tags $CERT_TAGS
+
+      # Deploy the CFN template for the Discovery service API Domain
+      - TAP_UI_DISCOVERY_PARAMS="$TAP_UI_DISCOVERY_PARAMS \"ArtifactBucketName=$CUSTOM_RESOURCES_S3_BUCKET_NAME\" \"ArtifactBucketKey=$CUSTOM_RESOURCES_S3_BUCKET_KEY\"" && echo $TAP_UI_DISCOVERY_PARAMS
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-discovery --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-discovery.template.yaml --parameter-overrides $TAP_UI_DISCOVERY_PARAMS --region ${SHARED_ACCOUNT_CD_REGION} --no-fail-on-empty-changeset --capabilities CAPABILITY_IAM --tags $TAGS)
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-discovery --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - TAP_DISCOVERY_ENDPOINT_URI=$(cat /root/stack_output.json | jq -r '.DiscoveryEndpointUri')
+
+      # Deploy the Discovery service Serverless project
+      - cd $CODEBUILD_SRC_DIR/packages/discovery && export NODE_PRESERVE_SYMLINKS=1 && SLS_DEBUG=*
+      - yq --yaml-output --arg WafName "$WAF_NAME" '.wafName |= $WafName' ./config.$DEPLOYMENT_STAGE_NAME.yml > ./config.$DEPLOYMENT_STAGE_NAME-sls-tmp.yml
+      - yq --yaml-output --arg WafVersion "$WAF_VERSION" '.wafVersion |= $WafVersion' ./config.$DEPLOYMENT_STAGE_NAME-sls-tmp.yml > ./config.$DEPLOYMENT_STAGE_NAME.yml
+      - cat ./config.$DEPLOYMENT_STAGE_NAME.yml
+      - npx sls deploy --buildVersion $PACKAGE_VERSION --region $SHARED_ACCOUNT_CD_REGION --verbose --stage $DEPLOYMENT_STAGE_NAME
+      - cd $CODEBUILD_SRC_DIR
+
+      # Deploy the cloudfront-events service Serverless project
+      - cd $CODEBUILD_SRC_DIR/packages/cloudfront-events && export NODE_PRESERVE_SYMLINKS=1 && SLS_DEBUG=*
+      - npx sls deploy --buildVersion $PACKAGE_VERSION --region $SHARED_ACCOUNT_CD_REGION --verbose --stage $DEPLOYMENT_STAGE_NAME
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-cloudfront-events --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - CLOUDFRONT_ORIGIN_RESPONSE_LAMBDA_ARN=$(cat /root/stack_output.json | jq -r '.OriginResponseLambdaFunctionQualifiedArn')
+      - cd $CODEBUILD_SRC_DIR
+
+      # Copy Web UI Assets to S3 Bucket
+      - TAP_DISCOVERY_ENDPOINT_URI_VERSION=v1 # the discovery service version
+      - TAP_DISCOVERY_URI=https://$TAP_DISCOVERY_ENDPOINT_URI/$TAP_DISCOVERY_ENDPOINT_URI_VERSION
+      # Update the config.json file with the discovery service domain name
+      - jq --arg TAP_DISCOVERY_URI "$TAP_DISCOVERY_URI" '.discoveryEndpointUri = $TAP_DISCOVERY_URI' $CODEBUILD_SRC_DIR/packages/web/dist/web-ui/assets/config.json > $CODEBUILD_SRC_DIR/packages/web/dist/web-ui/assets/tmp.json && mv $CODEBUILD_SRC_DIR/packages/web/dist/web-ui/assets/tmp.json $CODEBUILD_SRC_DIR/packages/web/dist/web-ui/assets/config.json
+      - aws s3 cp --recursive $CODEBUILD_SRC_DIR/packages/web/dist/web-ui s3://$TAP_UI_ARTIFACTS_BASE_PATH
+
+      # Deploy the Web project
+      # Remove internal quotes from TENANT_SUBDOMAIN_LIST string list
+      - TSL="${TENANT_SUBDOMAIN_LIST%\"}"
+      - TSL="${TSL#\"}"
+      - echo $TSL
+      - jq -n --arg tsl $TSL --arg wbn $CLOUDFRONT_BUCKET_NAME --arg certArn $CERT_ARN --arg buildId "$PACKAGE_VERSION/$CODEBUILD_BUILD_ID" --arg oai $ORIGIN_ACCESS_IDENTITY_ID --arg corLambda $CLOUDFRONT_ORIGIN_RESPONSE_LAMBDA_ARN --arg webAclId $WEB_ACLID '{"Aliases":$tsl, "WebUIBucketName":$wbn, "CertificateArn":$certArn, "WebBuildId":$buildId, "WebUIOriginAccessIdentityId":$oai, "CfOriginResponseDefaultBehaviorLambdaArn":$corLambda, "WebACLId":$webAclId}' > $CODEBUILD_SRC_DIR/cloud-front-props.json
+      - cat $CODEBUILD_SRC_DIR/cloud-front-props.json
+      - echo "$(jq -s '.[0] * .[1]' $CODEBUILD_SRC_DIR/packages/cdk/src/properties/cloud-front.properties.json $CODEBUILD_SRC_DIR/cloud-front-props.json)" > $CODEBUILD_SRC_DIR/packages/cdk/src/properties/cloud-front.properties.json
+      - cat $CODEBUILD_SRC_DIR/packages/cdk/src/properties/cloud-front.properties.json
+      # Due to the way the CDK operates, there is no option to just pass in the region like you can with cfn deploy, etc.
+      # This means we must set the AWS_REGION variable to the region we wish to deploy in, so we will set this variable and
+      # deploy the stacks in the following script.
+      - bash $CODEBUILD_SRC_DIR/deploy/cdk-deploy.sh
+
+      - aws cloudformation describe-stacks --stack-name $DEPLOY_STACK_NAME_PREFIX-ui --region $SHARED_ACCOUNT_CD_REGION --no-paginate --query 'Stacks[0].Outputs[*].{key:OutputKey,value:OutputValue}' --output json | jq from_entries? > /root/stack_output.json && cat /root/stack_output.json
+      - CLOUDFRONT_ID=$(cat /root/stack_output.json | jq -r '.WebUICloudFrontDistributionId')
+      - cd $CODEBUILD_SRC_DIR
+
+      # Invalidate the CouldFront cache
+      - aws cloudfront create-invalidation --region $SHARED_ACCOUNT_CD_REGION --distribution-id $CLOUDFRONT_ID --paths "/*"
+
+      # Deploy Datadog Monitors CFN template. NOTE: Currently there are no stack outputs in the monitors template
+      - eval $(echo aws cloudformation deploy --stack-name $DEPLOY_STACK_NAME_PREFIX-monitors --region $SHARED_ACCOUNT_CD_REGION --template-file $CODEBUILD_SRC_DIR/deploy/cfn-templates/em-tap-ui-monitors.template.yaml --no-fail-on-empty-changeset --parameter-overrides $TAP_MONITORS_PARAMS)
